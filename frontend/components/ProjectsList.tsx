@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import {
   ChevronDown,
   ChevronRight,
@@ -14,6 +15,7 @@ import {
   Loader2,
   AlertCircle,
   X,
+  ExternalLink,
 } from "lucide-react";
 import SchedulerModal from "./SchedulerModal";
 import ColumnStatisticsModal from "./ColumnStatisticsModal";
@@ -43,6 +45,7 @@ export default function ProjectsList({
   projects,
   onRunProject,
 }: ProjectsListProps) {
+  const router = useRouter();
   const [groupedByBrand, setGroupedByBrand] = useState<Map<string, Project[]>>(
     new Map(),
   );
@@ -85,7 +88,7 @@ export default function ProjectsList({
       const projectName = project.name || project.title || "Unknown";
       // Extract website domain from project name
       const website = extractWebsite(projectName);
-      
+
       if (!groups.has(website)) {
         groups.set(website, []);
       }
@@ -164,7 +167,7 @@ export default function ProjectsList({
       if (!response.ok) {
         const errorData = await response.json();
         throw new Error(
-          errorData.message || `Failed to cancel run: ${response.statusText}`
+          errorData.message || `Failed to cancel run: ${response.statusText}`,
         );
       }
 
@@ -179,7 +182,7 @@ export default function ProjectsList({
     } catch (error) {
       console.error("Error cancelling run:", error);
       alert(
-        `Failed to cancel run: ${error instanceof Error ? error.message : "Unknown error"}`
+        `Failed to cancel run: ${error instanceof Error ? error.message : "Unknown error"}`,
       );
     } finally {
       setLoading(null);
@@ -349,7 +352,10 @@ export default function ProjectsList({
                     brandProjects.map((project, index) => (
                       <tr
                         key={project.token}
-                        className="bg-slate-900/30 hover:bg-slate-800/40 transition-all duration-150 border-l-2 border-transparent hover:border-blue-500/50"
+                        className="bg-slate-900/30 hover:bg-slate-800/40 transition-all duration-150 border-l-2 border-transparent hover:border-blue-500/50 cursor-pointer"
+                        onClick={() =>
+                          router.push(`/projects/${project.token}`)
+                        }
                       >
                         <td className="px-4 py-4"></td>
                         <td className="px-6 py-4">
@@ -359,7 +365,7 @@ export default function ProjectsList({
                             </div>
                             <div className="flex-1 min-w-0">
                               <div
-                                className="font-medium text-slate-200 text-sm mb-1.5 truncate"
+                                className="font-medium text-blue-400 hover:text-blue-300 text-sm mb-1.5 truncate cursor-pointer"
                                 title={project.name}
                               >
                                 {project.name}
@@ -418,6 +424,16 @@ export default function ProjectsList({
                         </td>
                         <td className="px-4 py-4">
                           <div className="flex items-center justify-center gap-2">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                router.push(`/projects/${project.token}`);
+                              }}
+                              className="inline-flex items-center gap-1.5 px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold rounded-lg transition-all duration-200 shadow-md hover:shadow-indigo-500/25"
+                              title="View Details"
+                            >
+                              <ExternalLink size={14} />
+                            </button>
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();

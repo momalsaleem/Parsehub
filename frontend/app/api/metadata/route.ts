@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:5000';
 const API_KEY = process.env.NEXT_PUBLIC_API_KEY || 't_hmXetfMCq3';
+const REQUEST_TIMEOUT = 30000; // 30 seconds timeout
 
 /**
  * GET /api/metadata
@@ -12,6 +13,7 @@ export async function GET(request: NextRequest) {
   try {
     // Extract query parameters
     const searchParams = request.nextUrl.searchParams;
+    const projectToken = searchParams.get('project_token');
     const region = searchParams.get('region');
     const country = searchParams.get('country');
     const brand = searchParams.get('brand');
@@ -20,6 +22,7 @@ export async function GET(request: NextRequest) {
 
     // Build backend URL
     const params = new URLSearchParams();
+    if (projectToken) params.append('project_token', projectToken);
     if (region) params.append('region', region);
     if (country) params.append('country', country);
     if (brand) params.append('brand', brand);
@@ -30,28 +33,45 @@ export async function GET(request: NextRequest) {
 
     console.log(`[API] GET /api/metadata - Proxying to: ${backendUrl}`);
 
-    // Call Flask backend
-    const response = await fetch(backendUrl, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-    });
+    // Call Flask backend with timeout
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
+    
+    try {
+      const response = await fetch(backendUrl, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        signal: controller.signal,
+      });
 
-    const data = await response.json();
+      clearTimeout(timeoutId);
+      
+      const data = await response.json();
 
-    if (!response.ok) {
-      console.error(`[API] Backend returned ${response.status}:`, data);
+      if (!response.ok) {
+        console.error(`[API] Backend returned ${response.status}:`, data);
+        return NextResponse.json(
+          { error: data.error || 'Failed to fetch metadata' },
+          { status: response.status }
+        );
+      }
+
+      console.log(`[API] Successfully fetched ${data.count} metadata records`);
+      return NextResponse.json(data, { status: 200 });
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      console.error('[API] Metadata request timeout (30s exceeded)');
       return NextResponse.json(
-        { error: data.error || 'Failed to fetch metadata' },
-        { status: response.status }
+        { error: 'Metadata request timeout' },
+        { status: 504 }
       );
     }
-
-    console.log(`[API] Successfully fetched ${data.count} metadata records`);
-    return NextResponse.json(data, { status: 200 });
-  } catch (error) {
     console.error('[API] Error fetching metadata:', error);
     return NextResponse.json(
       { error: 'Failed to fetch metadata', details: String(error) },

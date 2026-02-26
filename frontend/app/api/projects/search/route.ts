@@ -16,6 +16,8 @@ export async function GET(request: NextRequest) {
     const region = searchParams.get('region');
     const country = searchParams.get('country');
     const brand = searchParams.get('brand');
+    const website = searchParams.get('website');
+    const groupByWebsite = searchParams.get('group_by_website');
     const limit = searchParams.get('limit') || '100';
     const offset = searchParams.get('offset') || '0';
 
@@ -24,6 +26,8 @@ export async function GET(request: NextRequest) {
     if (region) params.append('region', region);
     if (country) params.append('country', country);
     if (brand) params.append('brand', brand);
+    if (website) params.append('website', website);
+    if (groupByWebsite) params.append('group_by_website', groupByWebsite);
     params.append('limit', limit);
     params.append('offset', offset);
 

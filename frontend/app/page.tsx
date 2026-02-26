@@ -78,9 +78,10 @@ export default function Home() {
   const [selectedCountry, setSelectedCountry] = useState<string>("");
   const [selectedBrand, setSelectedBrand] = useState<string>("");
   const [selectedWebsite, setSelectedWebsite] = useState<string>("");
-  const [showFilters, setShowFilters] = useState(false);
+  const [showFilters, setShowFilters] = useState(true); // Show filters by default
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const [fetchAll, setFetchAll] = useState(false); // Toggle for fetching all projects vs paginated
 
   // Real-time monitoring hook
   const monitoring = useRealTimeMonitoring();
@@ -97,15 +98,21 @@ export default function Home() {
 
   useEffect(() => {
     fetchProjects();
-  }, [selectedRegion, selectedCountry, selectedBrand, selectedWebsite]);
+  }, [
+    selectedRegion,
+    selectedCountry,
+    selectedBrand,
+    selectedWebsite,
+    fetchAll,
+  ]);
 
   const fetchFilters = async () => {
     try {
       console.log("[Home] Fetching filter options...");
-      
+
       const response = await fetch("/api/filters", {
         headers: {
-          "Authorization": `Bearer ${process.env.NEXT_PUBLIC_API_KEY || 't_hmXetfMCq3'}`,
+          Authorization: `Bearer ${process.env.NEXT_PUBLIC_API_KEY || "t_hmXetfMCq3"}`,
         },
       });
 
@@ -116,14 +123,16 @@ export default function Home() {
 
       const data = await response.json();
       console.log("[Home] Successfully fetched filter options");
-      
+
       if (data.filters) {
         setRegions(data.filters.regions || []);
         setCountries(data.filters.countries || []);
         setBrands(data.filters.brands || []);
         setWebsites(data.filters.websites || []);
 
-        console.log(`[Home] Loaded filters - Regions: ${data.filters.regions?.length || 0}, Countries: ${data.filters.countries?.length || 0}, Brands: ${data.filters.brands?.length || 0}, Websites: ${data.filters.websites?.length || 0}`);
+        console.log(
+          `[Home] Loaded filters - Regions: ${data.filters.regions?.length || 0}, Countries: ${data.filters.countries?.length || 0}, Brands: ${data.filters.brands?.length || 0}, Websites: ${data.filters.websites?.length || 0}`,
+        );
       }
     } catch (err) {
       console.error("[Home] Error fetching filter options:", err);
@@ -133,11 +142,11 @@ export default function Home() {
   const fetchMetadata = async () => {
     try {
       console.log("[Home] Fetching metadata...");
-      
+
       const params = new URLSearchParams();
       const response = await fetch("/api/metadata?" + params.toString(), {
         headers: {
-          "Authorization": `Bearer ${process.env.NEXT_PUBLIC_API_KEY || 't_hmXetfMCq3'}`,
+          Authorization: `Bearer ${process.env.NEXT_PUBLIC_API_KEY || "t_hmXetfMCq3"}`,
         },
       });
 
@@ -150,8 +159,12 @@ export default function Home() {
       }
 
       const data = await response.json();
-      console.log("[Home] Successfully fetched", data.count || 0, "metadata records");
-      
+      console.log(
+        "[Home] Successfully fetched",
+        data.count || 0,
+        "metadata records",
+      );
+
       if (data.records) {
         setMetadata(data.records);
       }
@@ -165,23 +178,34 @@ export default function Home() {
       setError(null);
       let url = "/api/projects";
 
-      // Build query params from filters
+      // Build query params
       const params = new URLSearchParams();
+
+      // Default 50 per page, or 1000 for "All" mode
+      const limit = fetchAll ? "1000" : "50";
+
+      params.append("page", "1");
+      params.append("limit", limit);
+
+      // Add active filters (now supported by backend)
       if (selectedRegion) params.append("region", selectedRegion);
       if (selectedCountry) params.append("country", selectedCountry);
       if (selectedBrand) params.append("brand", selectedBrand);
       if (selectedWebsite) params.append("website", selectedWebsite);
 
-      // Use search endpoint if filters are applied, otherwise use / api/projects (which also groups)
-      if (selectedRegion || selectedCountry || selectedBrand || selectedWebsite) {
-        params.append("group_by_website", "true");
-        url = "/api/projects/search?" + params.toString();
-      }
+      url = "/api/projects?" + params.toString();
 
       console.log("[Home] Fetching projects from:", url);
 
-      const response = await fetch(url, { timeout: 300000 });
-      
+      // Use 30 second timeout for paginated requests (not 300 seconds!)
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+      const response = await fetch(url, {
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
       console.log("[Home] Projects response status:", response.status);
 
       if (!response.ok) {
@@ -191,14 +215,21 @@ export default function Home() {
       }
 
       const data = await response.json();
-      console.log("[Home] Backend returned response with keys:", Object.keys(data));
-      
+      console.log(
+        "[Home] Backend returned response with keys:",
+        Object.keys(data),
+      );
+
       // Handle both grouped (by_website) and flat (projects) response formats
       let allProjects: Project[] = [];
-      
+
       if (data.by_website && Array.isArray(data.by_website)) {
-        // Grouped response format (from / api/projects or /api/projects/search with grouping)
-        console.log("[Home] Processing grouped response with", data.by_website.length, "website groups");
+        // Grouped response format (from /api/projects or /api/projects/search with grouping)
+        console.log(
+          "[Home] Processing grouped response with",
+          data.by_website.length,
+          "website groups",
+        );
         for (const group of data.by_website) {
           if (group.projects && Array.isArray(group.projects)) {
             allProjects.push(...group.projects);
@@ -211,23 +242,33 @@ export default function Home() {
         // Flat response format
         allProjects = data.projects;
       }
-      
-      console.log("[Home] Successfully fetched", allProjects.length, "total projects");
-      
+
+      console.log(
+        "[Home] Successfully fetched",
+        allProjects.length,
+        "total projects",
+      );
+
       if (allProjects.length > 0) {
-        console.log("[Home] First 3 projects:", allProjects.slice(0, 3).map((p: Project) => p.title));
+        console.log(
+          "[Home] First 3 projects:",
+          allProjects.slice(0, 3).map((p: Project) => p.title),
+        );
       }
-      
+
       setProjects(allProjects);
       setLastUpdate(new Date());
 
       // Calculate stats
       const running =
-        allProjects.filter((p: Project) => p.last_run?.status === "running").length || 0;
+        allProjects.filter((p: Project) => p.last_run?.status === "running")
+          .length || 0;
       const completed =
-        allProjects.filter((p: Project) => p.last_run?.status === "complete").length || 0;
+        allProjects.filter((p: Project) => p.last_run?.status === "complete")
+          .length || 0;
       const queued =
-        allProjects.filter((p: Project) => p.last_run?.status === "queued").length || 0;
+        allProjects.filter((p: Project) => p.last_run?.status === "queued")
+          .length || 0;
 
       setStats({
         total: allProjects.length,
@@ -257,7 +298,7 @@ export default function Home() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${process.env.NEXT_PUBLIC_API_KEY || 't_hmXetfMCq3'}`,
+          Authorization: `Bearer ${process.env.NEXT_PUBLIC_API_KEY || "t_hmXetfMCq3"}`,
         },
         body: JSON.stringify({}),
       });
@@ -270,14 +311,15 @@ export default function Home() {
       const data = await response.json();
       console.log("[Home] Sync completed:", data);
 
-      setSyncMessage(`✅ ${data.message || `Synced ${data.total} projects to database`}`);
+      setSyncMessage(
+        `✅ ${data.message || `Synced ${data.total} projects to database`}`,
+      );
 
       // Refresh projects after sync
       setTimeout(() => {
         fetchProjects();
         setSyncing(false);
       }, 1000);
-
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       console.error("[Home] Sync error:", errorMsg);
@@ -305,7 +347,8 @@ export default function Home() {
     setSelectedWebsite("");
   };
 
-  const hasActiveFilters = selectedRegion || selectedCountry || selectedBrand || selectedWebsite;
+  const hasActiveFilters =
+    selectedRegion || selectedCountry || selectedBrand || selectedWebsite;
 
   return (
     <main className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950">
@@ -392,6 +435,17 @@ export default function Home() {
             Analytics
           </button>
           <button
+            onClick={() => setFetchAll(!fetchAll)}
+            className={`inline-flex items-center gap-2 px-6 py-3.5 rounded-xl font-semibold transition-all duration-200 border ${
+              fetchAll
+                ? "bg-orange-900/30 border-orange-600/50 text-orange-300"
+                : "bg-slate-800 hover:bg-slate-700 border-slate-700"
+            }`}
+          >
+            <Download className="w-5 h-5" />
+            {fetchAll ? "All Projects" : "View per 50"}
+          </button>
+          <button
             onClick={() => setShowFilters(!showFilters)}
             className={`inline-flex items-center gap-2 px-6 py-3.5 rounded-xl font-semibold transition-all duration-200 border ${
               hasActiveFilters
@@ -400,7 +454,7 @@ export default function Home() {
             }`}
           >
             <Filter className="w-5 h-5" />
-            Filters {hasActiveFilters && "✓"}
+            {showFilters ? "Hide" : "Show"} Filters {hasActiveFilters && "✓"}
           </button>
           <button
             onClick={fetchProjects}
@@ -434,7 +488,9 @@ export default function Home() {
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-2">Region</label>
+                <label className="block text-sm font-medium text-slate-300 mb-2">
+                  Region
+                </label>
                 <select
                   value={selectedRegion}
                   onChange={(e) => setSelectedRegion(e.target.value)}
@@ -449,7 +505,9 @@ export default function Home() {
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-2">Country</label>
+                <label className="block text-sm font-medium text-slate-300 mb-2">
+                  Country
+                </label>
                 <select
                   value={selectedCountry}
                   onChange={(e) => setSelectedCountry(e.target.value)}
@@ -464,7 +522,9 @@ export default function Home() {
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-2">Brand</label>
+                <label className="block text-sm font-medium text-slate-300 mb-2">
+                  Brand
+                </label>
                 <select
                   value={selectedBrand}
                   onChange={(e) => setSelectedBrand(e.target.value)}
@@ -479,7 +539,9 @@ export default function Home() {
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-2">Website</label>
+                <label className="block text-sm font-medium text-slate-300 mb-2">
+                  Website
+                </label>
                 <select
                   value={selectedWebsite}
                   onChange={(e) => setSelectedWebsite(e.target.value)}

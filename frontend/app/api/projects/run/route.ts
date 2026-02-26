@@ -50,23 +50,28 @@ function saveRunToken(token: string, runToken: string) {
 
 export async function POST(request: NextRequest) {
   try {
-    const { token, pages } = await request.json()
+    const { token, project_token, pages } = await request.json()
+    
+    // Accept either 'token' or 'project_token' field name
+    const projectToken = token || project_token
 
-    if (!token) {
+    if (!projectToken) {
       return NextResponse.json(
         { error: 'Project token is required' },
         { status: 400 }
       )
     }
 
+    console.log(`[API] Running project: ${projectToken} with ${pages || 1} pages`)
+
     const response = await axios.post(
-      `${BASE_URL}/projects/${token}/run`,
+      `${BASE_URL}/projects/${projectToken}/run`,
       {},
-      { params: { api_key: API_KEY } }
+      { params: { api_key: API_KEY, pages: pages || 1 } }
     )
 
     if (response.data && response.data.run_token) {
-      saveRunToken(token, response.data.run_token)
+      saveRunToken(projectToken, response.data.run_token)
       
       // Save pages info to active_runs.json if pages specified
       if (pages && pages > 0) {
@@ -83,7 +88,7 @@ export async function POST(request: NextRequest) {
             data.runs = []
           }
           
-          const runIndex = data.runs.findIndex((r: any) => r.token === token && r.run_token === response.data.run_token)
+          const runIndex = data.runs.findIndex((r: any) => r.token === projectToken && r.run_token === response.data.run_token)
           if (runIndex >= 0) {
             data.runs[runIndex].target_pages = pages
           }
@@ -96,6 +101,8 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    console.log(`[API] ✅ Project run started: ${projectToken}, run_token: ${response.data.run_token}`)
+
     return NextResponse.json({
       success: true,
       run_token: response.data.run_token,
@@ -103,9 +110,18 @@ export async function POST(request: NextRequest) {
       pages: pages || 1,
     })
   } catch (error) {
-    console.error('API Error:', error)
+    console.error('[API] Error running project:', error)
+    
+    if (axios.isAxiosError(error)) {
+      console.error('[API] Error response:', error.response?.data)
+      return NextResponse.json(
+        { error: error.response?.data?.error || error.message || 'Failed to run project' },
+        { status: error.response?.status || 500 }
+      )
+    }
+
     return NextResponse.json(
-      { error: 'Failed to run project' },
+      { error: error instanceof Error ? error.message : 'Failed to run project' },
       { status: 500 }
     )
   }

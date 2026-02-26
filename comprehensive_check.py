@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 import sqlite3
+from database_config import DATABASE_PATH
 
-conn = sqlite3.connect('d:\\Parsehub\\parsehub.db')
+conn = sqlite3.connect(DATABASE_PATH)
 cursor = conn.cursor()
 
 print("=== ALL Sessions ===")
@@ -11,7 +12,8 @@ cursor.execute("""
     ORDER BY id DESC
 """)
 for row in cursor.fetchall():
-    print(f"  Session {row[0]}: token={row[1]}, name={row[2]}, target={row[3]}, completed={row[4]}, status={row[5]}")
+    print(
+        f"  Session {row[0]}: token={row[1]}, name={row[2]}, target={row[3]}, completed={row[4]}, status={row[5]}")
 
 print("\n=== ALL URL Patterns ===")
 cursor.execute("SELECT id, project_token, original_url FROM url_patterns")
@@ -27,7 +29,8 @@ cursor.execute("""
 running = cursor.fetchall()
 for session_id, project_token in running:
     # Check if URL exists
-    cursor.execute("SELECT original_url FROM url_patterns WHERE project_token = ?", (project_token,))
+    cursor.execute(
+        "SELECT original_url FROM url_patterns WHERE project_token = ?", (project_token,))
     url_result = cursor.fetchone()
     url_status = f"✓ {url_result[0]}" if url_result else "✗ NO URL"
     print(f"  Session {session_id} (token={project_token}): {url_status}")

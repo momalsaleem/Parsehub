@@ -11,13 +11,12 @@ import sqlite3
 import sys
 import os
 from datetime import datetime
-
-os.chdir('d:\\Parsehub')
+from database_config import DATABASE_PATH
 
 try:
-    conn = sqlite3.connect('parsehub.db')
+    conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
-    
+
     print("[INIT] Creating scraping_sessions table...")
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS scraping_sessions (
@@ -34,7 +33,7 @@ try:
         )
     ''')
     print("[OK] scraping_sessions table created")
-    
+
     print("[INIT] Creating iteration_runs table...")
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS iteration_runs (
@@ -56,7 +55,7 @@ try:
         )
     ''')
     print("[OK] iteration_runs table created")
-    
+
     print("[INIT] Creating url_patterns table...")
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS url_patterns (
@@ -71,21 +70,22 @@ try:
         )
     ''')
     print("[OK] url_patterns table created")
-    
+
     # Commit the changes
     conn.commit()
-    
+
     # Verify tables were created
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('scraping_sessions', 'iteration_runs', 'url_patterns')")
+    cursor.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('scraping_sessions', 'iteration_runs', 'url_patterns')")
     created_tables = [row[0] for row in cursor.fetchall()]
-    
+
     print(f"\n[SUCCESS] Created {len(created_tables)} table(s):")
     for table in created_tables:
         print(f"  ✓ {table}")
-    
+
     conn.close()
     sys.exit(0)
-    
+
 except Exception as e:
     print(f"[ERROR] {e}")
     sys.exit(1)

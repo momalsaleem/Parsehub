@@ -78,7 +78,8 @@ export default function AllProjectsAnalyticsModal({
 
   const fetchRunningProjects = async () => {
     try {
-      const response = await fetch("/api/projects");
+      // Request paginated projects (first 50 items for performance)
+      const response = await fetch("/api/projects?page=1&limit=50");
       if (response.ok) {
         const data = await response.json();
         const running = (data.projects || []).filter(
