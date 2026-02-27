@@ -1246,47 +1246,97 @@ def get_project_by_id(project_id: int):
         return jsonify({'error': str(e), 'success': False}), 500
 
 
-@app.route('/api/projects/<token>', methods=['GET'])
-def get_project_details(token: str):
+@app.route('/api/projects/<project_token>', methods=['GET'])
+def get_project_details(project_token: str):
     """
-    Get detailed information about a specific project (by token)
+    Get detailed information about a specific project (by token).
     Includes project data, associated metadata, and run statistics
     """
+    if not validate_api_key(request):
+        return jsonify({'error': 'Unauthorized'}), 401
+
     try:
-        logger.info(f'[API] Fetching project details: token={token}')
+        logger.info(f'[API] Fetching project details: token={project_token}')
 
-        # Get project from database
-        project = g.db.get_project_by_token(token)
+        # IMPORTANT: lookup by token (string identifier used by frontend),
+        # not by numeric id. For Postgres use %s placeholders; for SQLite use ?.
+        placeholder = '%s' if getattr(g.db, 'use_postgres', False) else '?'
+        cursor = g.db.cursor()
 
-        if not project:
-            logger.warning(f'[API] Project not found: {token}')
-            return jsonify({'error': 'Project not found', 'success': False}), 404
+        cursor.execute(
+            f'SELECT * FROM projects WHERE token = {placeholder}',
+            (project_token,)
+        )
+        row = cursor.fetchone()
 
-        # Get metadata for this project
-        metadata = g.db.get_metadata_by_project_token(token)
+        if not row:
+            logger.warning(f'[API] Project not found: {project_token}')
+            return jsonify({'error': 'Project not found'}), 404
 
-        # Get run statistics for this project
+        project_row = row if isinstance(row, dict) else dict(row)
+        project_id = project_row.get('id')
+
+        # Attach most recent run (keeps existing frontend expectations: last_run.status/pages_scraped)
+        last_run = None
+        if project_id is not None:
+            cursor.execute(
+                f'''
+                SELECT run_token, status, pages_scraped, start_time, end_time,
+                       duration_seconds, created_at, updated_at
+                FROM runs
+                WHERE project_id = {placeholder}
+                ORDER BY created_at DESC
+                LIMIT 1
+                ''',
+                (project_id,)
+            )
+            run_row = cursor.fetchone()
+            if run_row:
+                rr = run_row if isinstance(run_row, dict) else dict(run_row)
+                pages_scraped = rr.get('pages_scraped') or 0
+                last_run = {
+                    'run_token': rr.get('run_token'),
+                    'status': rr.get('status'),
+                    'pages_scraped': pages_scraped,
+                    'pages': pages_scraped,
+                    'start_time': rr.get('start_time'),
+                    'end_time': rr.get('end_time'),
+                    'duration_seconds': rr.get('duration_seconds'),
+                    'created_at': rr.get('created_at'),
+                    'updated_at': rr.get('updated_at'),
+                }
+
+        # Best-effort enrichment (do not fail the whole endpoint if these error)
+        metadata = []
+        try:
+            metadata = g.db.get_metadata_by_project_token(project_token) or []
+        except Exception as exc:
+            logger.warning(f'[API] Metadata lookup failed for {project_token}: {exc}')
+
         run_stats = None
-        if project.get('id'):
-            run_stats = g.db.get_project_run_stats(project['id'])
+        try:
+            if project_id is not None:
+                run_stats = g.db.get_project_run_stats(project_id)
+        except Exception as exc:
+            logger.warning(f'[API] Run stats lookup failed for {project_token}: {exc}')
 
         response_data = {
             'success': True,
             'data': {
-                'id': project.get('id'),
-                'token': project.get('token'),
-                'title': project.get('title'),
-                'owner_email': project.get('owner_email'),
-                'main_site': project.get('main_site'),
-                'created_at': project.get('created_at'),
-                'updated_at': project.get('updated_at'),
-                'last_run': project.get('last_run'),
+                'id': project_row.get('id'),
+                'token': project_row.get('token'),
+                'title': project_row.get('title'),
+                'owner_email': project_row.get('owner_email'),
+                'main_site': project_row.get('main_site'),
+                'created_at': project_row.get('created_at'),
+                'updated_at': project_row.get('updated_at'),
+                'last_run': last_run,
                 'metadata': metadata,
                 'run_stats': run_stats
             }
         }
 
-        logger.info(f'[API] ✅ Project details retrieved: {token}')
+        logger.info(f'[API] ✅ Project details retrieved: {project_token}')
         return jsonify(response_data), 200
 
     except Exception as e:
