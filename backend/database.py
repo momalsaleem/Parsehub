@@ -33,12 +33,14 @@ else:
 
 
 class ParseHubDatabase:
+    # Shared thread-local storage for all instances of ParseHubDatabase
+    _shared_local = threading.local()
+
     def __init__(self, db_path: str = None):
         # Database connection info
         self.db_url = os.getenv('DATABASE_URL')
         self.use_postgres = bool(self.db_url and POSTGRES_AVAILABLE)
         
-        self._local = threading.local()
 
         if self.use_postgres:
             print(f"Using PostgreSQL database: {self.db_url.split('@')[-1]}")
@@ -58,11 +60,11 @@ class ParseHubDatabase:
 
     @property
     def conn(self):
-        return getattr(self._local, 'conn', None)
+        return getattr(self._shared_local, 'conn', None)
 
     @conn.setter
     def conn(self, value):
-        self._local.conn = value
+        self._shared_local.conn = value
 
     def _get_connection(self):
         """Get a new database connection based on type"""
@@ -172,27 +174,28 @@ class ParseHubDatabase:
 
     def connect(self):
         """Connect to or return existing database connection"""
-        if getattr(self._local, 'conn', None):
+        if getattr(self._shared_local, 'conn', None):
             # Test if connection is alive
             try:
                 if self.use_postgres:
                     # Quick ping for Postgres
-                    cursor = self.conn.cursor()
+                    cursor = getattr(self._shared_local, 'conn').cursor()
                     cursor.execute("SELECT 1")
                     # psycopg2 might need explicitly calling commit or closing cursor
                     if hasattr(cursor, 'close'): cursor.close()
-                return self.conn
+                return getattr(self._shared_local, 'conn')
             except Exception:
                 # Connection is dead
                 try:
-                    self.conn.close()
+                    getattr(self._shared_local, 'conn').close()
                 except Exception:
                     pass
-                self.conn = None
+                self._shared_local.conn = None
                 
         # Create new connection
         self.conn = self._get_connection()
         return self.conn
+
 
     def disconnect(self):
         """Close database connection"""
