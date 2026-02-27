@@ -80,45 +80,84 @@ def get_db() -> 'ParseHubDatabase':
 
 
 def _initialize_services():
-    """Initialize all services exactly once per worker process."""
+    """Initialize all services exactly once per worker process.
+
+    IMPORTANT: This function NEVER raises.  Any exception is caught, logged,
+    and the app continues running.  The health endpoint must always work.
+
+    _services_initialized is set to True regardless of DB success so that
+    we don't hammer PostgreSQL with connection retries on every request.
+    DB-dependent routes will get a 503 on first failure; the pool's
+    pool_pre_ping will recover connections automatically when PG is healthy.
+    """
     global _db, _monitoring_service, _analytics_service
     global _excel_import_service, _auto_runner_service, _services_initialized
 
     with _services_lock:
         if _services_initialized:
             return
+
+        # Mark initialized FIRST — stops retry storms against an overloaded DB
+        _services_initialized = True
+
         try:
-            _db = ParseHubDatabase()           # metadata only, no connection
+            _db = ParseHubDatabase()   # metadata only, never opens a connection
+        except Exception as exc:
+            logger.critical(f'[boot] ParseHubDatabase() failed (fatal): {exc}')
+            return
 
-            # Run schema init (opens + closes a connection immediately)
-            _db.init_db()
+        try:
+            _db.init_db()   # runs schema migrations
+        except Exception as exc:
+            logger.error(
+                f'[boot] init_db() failed — DB may not be ready yet: {exc}\n'
+                '        DB-dependent routes will return 503 until DB is reachable.'
+            )
+            # Don't return — still set up the non-DB services below
 
+        try:
             _monitoring_service   = MonitoringService()
             _analytics_service    = AnalyticsService()
             _excel_import_service = ExcelImportService(_db)
             _auto_runner_service  = AutoRunnerService()
+        except Exception as exc:
+            logger.error(f'[boot] Service setup failed: {exc}')
 
-            _services_initialized = True
-            logger.info('[boot] All services initialized.')
+        try:
             _start_background_services()
         except Exception as exc:
-            logger.critical(f'[boot] Service initialization failed: {exc}')
-            # Do NOT crash — health endpoint still needs to work
+            logger.error(f'[boot] Background services failed: {exc}')
+
+        logger.info('[boot] Initialization complete (DB errors above are non-fatal).')
 
 
 @app.before_request
 def ensure_services():
-    """Lazily initialize services on the very first real request."""
+    """Lazily initialize services on the very first real request.
+
+    SKIPPED for /api/health so that the liveness probe ALWAYS returns 200
+    even when the database is completely unavailable.
+    """
+    from flask import request as _req
+    # Health probe must never be blocked by service init
+    if _req.path in ('/api/health', '/api/health/'):
+        return
     if not _services_initialized:
         _initialize_services()
 
 
+
 @app.teardown_appcontext
 def return_db_connection(exc=None):
-    """Return the PostgreSQL connection to the pool after every request."""
-    db = _db
-    if db is not None and db.use_postgres:
-        db.disconnect()   # puts conn back in pool
+    """Return the PostgreSQL connection to the pool after every request.
+    Fully guarded — must never raise under any circumstances.
+    """
+    try:
+        db = _db
+        if db is not None and getattr(db, 'use_postgres', False):
+            db.disconnect()   # returns raw_connection to SQLAlchemy pool
+    except Exception as e:
+        logger.warning(f'[teardown] Error returning DB connection: {e}')
 
 # ── Health Blueprint ─────────────────────────────────────────────────────────────
 # Using a Blueprint + explicit endpoint names avoids AssertionError when the
@@ -1813,6 +1852,38 @@ def not_found(error):
 def internal_error(error):
     logger.error(f'Internal server error: {error}')
     return jsonify({'error': 'Internal server error'}), 500
+
+
+@app.errorhandler(503)
+def service_unavailable(error):
+    return jsonify({'error': 'Service temporarily unavailable', 'detail': str(error)}), 503
+
+
+@app.errorhandler(Exception)
+def unhandled_exception(exc):
+    """Catch-all: any exception that escapes a route handler returns 503 JSON.
+    This prevents Gunicorn from returning a raw 502 to the Next.js proxy.
+    DB errors (OperationalError, InterfaceError, pool timeout) all land here.
+    """
+    err_type = type(exc).__name__
+    err_msg  = str(exc)
+    logger.error(f'[unhandled] {err_type}: {err_msg}', exc_info=True)
+
+    # DB-related exception types → 503 (service temporarily unavailable)
+    db_error_keywords = (
+        'OperationalError', 'InterfaceError', 'DatabaseError',
+        'pool', 'connect', 'timeout', 'too many clients', 'FATAL',
+    )
+    is_db_error = err_type in db_error_keywords or any(
+        kw.lower() in err_msg.lower() for kw in db_error_keywords
+    )
+
+    status = 503 if is_db_error else 500
+    return jsonify({
+        'error': 'Database temporarily unavailable. Please retry.' if is_db_error
+                 else 'Internal server error.',
+        'type': err_type,
+    }), status
 
 
 if __name__ == '__main__':

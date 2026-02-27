@@ -100,11 +100,12 @@ def get_engine():
                 )
 
         try:
-            from sqlalchemy import create_engine, event
+            from sqlalchemy import create_engine
             from sqlalchemy.pool import QueuePool
 
             sa_url = _build_engine_url(db_url)
-            logger.info(f'[db_pool] Creating engine (driver={sa_url.split("+")[1].split(":")[0]})')
+            driver = sa_url.split('+')[1].split(':')[0] if '+' in sa_url else 'unknown'
+            logger.info(f'[db_pool] Creating SQLAlchemy engine (driver={driver})')
 
             engine = create_engine(
                 sa_url,
@@ -114,20 +115,20 @@ def get_engine():
                 pool_timeout=_POOL_TIMEOUT,
                 pool_recycle=_POOL_RECYCLE,
                 pool_pre_ping=_POOL_PRE_PING,
-                connect_args={
-                    'connect_timeout': 10,  # fail fast if PG is unreachable
-                },
+                # connect_timeout: fail fast per-connection, not at engine creation
+                connect_args={'connect_timeout': 10},
             )
 
-            # Verify connectivity at startup (one connection, then returned to pool)
-            with engine.connect() as probe:
-                probe.execute(__import__('sqlalchemy').text('SELECT 1'))
+            # DO NOT probe here — probing opens a connection and crashes when
+            # PostgreSQL is at its connection limit.  pool_pre_ping tests each
+            # borrowed connection lazily before handing it to the caller.
             logger.info(
-                f'[db_pool] Engine ready: pool_size={_POOL_SIZE}, '
-                f'max_overflow={_MAX_OVERFLOW}'
+                f'[db_pool] Engine configured: pool_size={_POOL_SIZE}, '
+                f'max_overflow={_MAX_OVERFLOW}, pre_ping=True.  '
+                f'Connections are acquired lazily on first use.'
             )
-
             _engine = engine
+
         except ImportError:
             # SQLAlchemy not installed — fall back to bare psycopg2 / pg8000
             logger.warning('[db_pool] SQLAlchemy not found, using fallback bare pool')
