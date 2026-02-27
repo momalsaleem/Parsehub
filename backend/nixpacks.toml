@@ -1,15 +1,15 @@
 # Nixpacks build configuration for the Flask backend.
-# Forces Python 3.11 and installs the libpq C library needed by psycopg2-binary.
+#
+# [phases.install] is intentionally OMITTED — Nixpacks auto-detects
+# requirements.txt and runs pip install inside its managed venv.
+# Overriding the install phase breaks the venv PATH before pip is available.
 
 [phases.setup]
-# python311  — explicit runtime version
-# gcc        — needed if any package compiles C extensions
-# postgresql — provides libpq headers; psycopg2-binary bundles its own copy
-#              but pg8000 (pure Python) needs none; keep postgresql as fallback
+# python311  — pin explicit runtime
+# gcc        — C toolchain (needed if any wheel compiles native code)
+# postgresql — ships libpq so psycopg2 source builds work; psycopg2-binary
+#              uses a bundled copy anyway, so this is just a safety net
 nixPkgs = ["python311", "gcc", "postgresql"]
-
-[phases.install]
-cmds = ["pip install --upgrade pip", "pip install -r requirements.txt"]
 
 [start]
 cmd = "gunicorn api_server:app --workers 2 --threads 2 --worker-class gthread --timeout 120 --keep-alive 5 --bind 0.0.0.0:$PORT --log-level info --access-logfile - --error-logfile -"
