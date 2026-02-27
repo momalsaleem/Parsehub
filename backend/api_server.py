@@ -5,11 +5,12 @@ Exposes REST endpoints for the Next.js frontend to control and monitor real-time
 
 from pathlib import Path
 import sys
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, g
 from flask_cors import CORS
 from dotenv import load_dotenv
 import os
 import logging
+import uuid
 from typing import Optional, Dict, List
 import json
 from datetime import datetime
@@ -133,14 +134,16 @@ def _initialize_services():
 
 @app.before_request
 def ensure_services():
-    """Lazily initialize services on the very first real request.
+    """Attach a request_id to every request and lazily initialize services.
 
-    SKIPPED for /api/health so that the liveness probe ALWAYS returns 200
-    even when the database is completely unavailable.
+    request_id is a short hex token included in every error response so that
+    log lines can be correlated without exposing internal stack traces.
+
+    Service init is SKIPPED for /api/health so that the liveness probe always
+    returns 200 even when the database is completely unavailable.
     """
-    from flask import request as _req
-    # Health probe must never be blocked by service init
-    if _req.path in ('/api/health', '/api/health/'):
+    g.request_id = uuid.uuid4().hex[:12]
+    if request.path in ('/api/health', '/api/health/'):
         return
     if not _services_initialized:
         _initialize_services()
@@ -160,23 +163,27 @@ def return_db_connection(exc=None):
         logger.warning(f'[teardown] Error returning DB connection: {e}')
 
 # ── Health Blueprint ─────────────────────────────────────────────────────────────
-# Using a Blueprint + explicit endpoint names avoids AssertionError when the
-# old inline health_check() definition at the bottom of this file was also
-# being registered on the same Flask app.
+# Rules that eliminate AssertionError on startup:
+#   1. Routes live in a Blueprint (not on `app` directly).
+#   2. Every @route decorator has an explicit `endpoint=` argument.
+#   3. The Python function names are unique across the whole file
+#      (health_liveness_route / health_db_route) — Flask cannot use them as
+#      accidental default endpoint names.
+#   4. register_blueprint is called exactly once at module level.
 
 from flask import Blueprint as _Blueprint
 
 _health_bp = _Blueprint('health', __name__)
 
 
-@_health_bp.route('/api/health', methods=['GET'], endpoint='health_check_v1')
-def health_check():
+@_health_bp.route('/api/health', methods=['GET'], endpoint='liveness')
+def health_liveness_route():
     """Lightweight liveness probe — never touches the database."""
     return jsonify({'status': 'ok', 'service': 'parsehub-backend'}), 200
 
 
-@_health_bp.route('/api/health/db', methods=['GET'], endpoint='health_db_v1')
-def health_check_db():
+@_health_bp.route('/api/health/db', methods=['GET'], endpoint='readiness')
+def health_db_route():
     """Readiness probe — verifies database connectivity."""
     try:
         from db_pool import ping_db
@@ -188,8 +195,9 @@ def health_check_db():
         return jsonify({'status': 'error', 'detail': str(exc)}), 503
 
 
-# Register once — blueprint handles deduplication automatically
-app.register_blueprint(_health_bp)
+# Register exactly once — guard prevents double-registration on hot reloads
+if 'health' not in app.blueprints:
+    app.register_blueprint(_health_bp)
 
 
 # ── Background services ───────────────────────────────────────────────────────────
@@ -1843,31 +1851,45 @@ def get_incomplete_projects():
 
 # ========== ERROR HANDLERS ==========
 
+def _rid() -> str:
+    """Return the current request_id (set by before_request), or a fallback."""
+    return getattr(g, 'request_id', uuid.uuid4().hex[:12])
+
+
 @app.errorhandler(404)
 def not_found(error):
-    return jsonify({'error': 'Endpoint not found'}), 404
+    rid = _rid()
+    logger.warning(f'[{rid}] 404 {request.path}')
+    return jsonify({'error': 'Endpoint not found', 'request_id': rid}), 404
 
 
 @app.errorhandler(500)
 def internal_error(error):
-    logger.error(f'Internal server error: {error}')
-    return jsonify({'error': 'Internal server error'}), 500
+    rid = _rid()
+    logger.error(f'[{rid}] 500 Internal server error: {error}')
+    return jsonify({'error': 'Internal server error', 'request_id': rid}), 500
 
 
 @app.errorhandler(503)
 def service_unavailable(error):
-    return jsonify({'error': 'Service temporarily unavailable', 'detail': str(error)}), 503
+    rid = _rid()
+    return jsonify({
+        'error': 'Service temporarily unavailable',
+        'detail': str(error),
+        'request_id': rid,
+    }), 503
 
 
 @app.errorhandler(Exception)
 def unhandled_exception(exc):
-    """Catch-all: any exception that escapes a route handler returns 503 JSON.
+    """Catch-all: any exception that escapes a route handler returns JSON.
     This prevents Gunicorn from returning a raw 502 to the Next.js proxy.
     DB errors (OperationalError, InterfaceError, pool timeout) all land here.
     """
+    rid      = _rid()
     err_type = type(exc).__name__
     err_msg  = str(exc)
-    logger.error(f'[unhandled] {err_type}: {err_msg}', exc_info=True)
+    logger.error(f'[{rid}] [unhandled] {err_type}: {err_msg}', exc_info=True)
 
     # DB-related exception types → 503 (service temporarily unavailable)
     db_error_keywords = (
@@ -1883,6 +1905,7 @@ def unhandled_exception(exc):
         'error': 'Database temporarily unavailable. Please retry.' if is_db_error
                  else 'Internal server error.',
         'type': err_type,
+        'request_id': rid,
     }), status
 
 
