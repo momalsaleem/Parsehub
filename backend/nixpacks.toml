@@ -1,15 +1,10 @@
 # Nixpacks build configuration for the Flask backend.
 #
-# [phases.install] is intentionally OMITTED — Nixpacks auto-detects
-# requirements.txt and runs pip install inside its managed venv.
-# Overriding the install phase breaks the venv PATH before pip is available.
-
-[phases.setup]
-# python311  — pin explicit runtime
-# gcc        — C toolchain (needed if any wheel compiles native code)
-# postgresql — ships libpq so psycopg2 source builds work; psycopg2-binary
-#              uses a bundled copy anyway, so this is just a safety net
-nixPkgs = ["python311", "gcc", "postgresql"]
+# Do NOT set [phases.setup] nixPkgs — specifying python311/gcc/postgresql
+# replaces Nixpacks' default Python provider, so it never creates the
+# /opt/venv and "pip" is not on PATH (exit 127). Let Nixpacks auto-detect
+# Python from requirements.txt and run pip install in its managed venv.
+# psycopg2-binary is a precompiled wheel; no system libpq needed at build time.
 
 [start]
 cmd = "gunicorn api_server:app --workers 2 --threads 2 --worker-class gthread --timeout 120 --keep-alive 5 --bind 0.0.0.0:$PORT --log-level info --access-logfile - --error-logfile -"
