@@ -2,7 +2,7 @@
 Analytics Service - Provides detailed analytics and data analysis
 """
 
-from backend.database import ParseHubDatabase
+from database import ParseHubDatabase
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 

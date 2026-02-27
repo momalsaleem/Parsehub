@@ -16,7 +16,7 @@ if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
 
 try:
-    from backend.incremental_scraping_manager import IncrementalScrapingManager
+    from incremental_scraping_manager import IncrementalScrapingManager
 except ImportError:
     from incremental_scraping_manager import IncrementalScrapingManager
 

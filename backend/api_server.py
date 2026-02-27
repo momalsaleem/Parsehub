@@ -25,14 +25,14 @@ if str(root_dir) not in sys.path:
 
 # Import local services
 try:
-    from backend.database import ParseHubDatabase
-    from backend.monitoring_service import MonitoringService
-    from backend.analytics_service import AnalyticsService
-    from backend.excel_import_service import ExcelImportService
-    from backend.auto_runner_service import AutoRunnerService
-    from backend.fetch_projects import fetch_all_projects, get_all_projects_with_cache
-    from backend.incremental_scraping_scheduler import start_incremental_scraping_scheduler, stop_incremental_scraping_scheduler
-    from backend.auto_sync_service import start_auto_sync_service, stop_auto_sync_service, get_auto_sync_service
+    from database import ParseHubDatabase
+    from monitoring_service import MonitoringService
+    from analytics_service import AnalyticsService
+    from excel_import_service import ExcelImportService
+    from auto_runner_service import AutoRunnerService
+    from fetch_projects import fetch_all_projects, get_all_projects_with_cache
+    from incremental_scraping_scheduler import start_incremental_scraping_scheduler, stop_incremental_scraping_scheduler
+    from auto_sync_service import start_auto_sync_service, stop_auto_sync_service, get_auto_sync_service
 except ImportError:
     # Fallback for when running from backend directory
     from database import ParseHubDatabase
@@ -1350,7 +1350,7 @@ def ingest_project_data(project_token: str):
     - days_back: How many days back to look for runs (default: 30)
     """
     try:
-        from backend.data_ingestion_service import ParseHubDataIngestor
+        from data_ingestion_service import ParseHubDataIngestor
     except ImportError:
         from data_ingestion_service import ParseHubDataIngestor
 
@@ -1496,7 +1496,7 @@ def check_and_continue_scraping():
         return jsonify({'error': 'Unauthorized'}), 401
 
     try:
-        from backend.incremental_scraping_manager import IncrementalScrapingManager
+        from incremental_scraping_manager import IncrementalScrapingManager
 
         manager = IncrementalScrapingManager()
         continuation_runs = manager.check_and_match_pages()
@@ -1536,7 +1536,7 @@ def monitor_continuation_runs():
         return jsonify({'error': 'Unauthorized'}), 401
 
     try:
-        from backend.incremental_scraping_manager import IncrementalScrapingManager
+        from incremental_scraping_manager import IncrementalScrapingManager
 
         manager = IncrementalScrapingManager()
         manager.monitor_continuation_runs()

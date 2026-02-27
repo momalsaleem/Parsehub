@@ -9,7 +9,7 @@ from typing import Optional, Dict, List
 from dotenv import load_dotenv
 import os
 import hashlib
-from backend.database import ParseHubDatabase
+from database import ParseHubDatabase
 
 load_dotenv()
 

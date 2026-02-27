@@ -20,7 +20,7 @@ except ImportError:
     pd = None
 
 try:
-    from backend.database import ParseHubDatabase
+    from database import ParseHubDatabase
 except ImportError:
     from database import ParseHubDatabase
 

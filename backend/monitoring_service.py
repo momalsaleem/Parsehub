@@ -24,9 +24,9 @@ if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
 
 try:
-    from backend.database import ParseHubDatabase
-    from backend.recovery_service import RecoveryService
-    from backend.auto_runner_service import AutoRunnerService
+    from database import ParseHubDatabase
+    from recovery_service import RecoveryService
+    from auto_runner_service import AutoRunnerService
 except ImportError:
     from database import ParseHubDatabase
     from recovery_service import RecoveryService
