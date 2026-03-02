@@ -2119,32 +2119,149 @@ class ParseHubDatabase:
                 pass
             return []
 
-    def _get_distinct_regions_from_project_titles(self) -> list:
-        """Fallback: derive region values from project titles (e.g. trailing (APAC), (EMENA), (LATAM))."""
+    def _get_distinct_regions_from_project_titles_or_domains(self) -> list:
+        """Fallback: derive region values from project titles and domains.
+
+        Sources used:
+        1) Title suffixes like "Project Name (APAC)"
+        2) Region tokens found in title/body text (APAC, EMEA, EMENA, LATAM, etc.)
+        3) Region tokens found in main_site/domain text
+        """
         import re
+        from urllib.parse import urlparse
+
+        region_aliases = {
+            'APAC': 'APAC',
+            'EMEA': 'EMEA',
+            'EMENA': 'EMENA',
+            'LATAM': 'LATAM',
+            'ANZ': 'ANZ',
+            'MEA': 'MEA',
+            'EU': 'EU',
+            'NA': 'NA',
+            'NAM': 'NAM',
+            'NORTHAMERICA': 'NA',
+            'NORTH AMERICA': 'NA',
+            'SOUTHAMERICA': 'LATAM',
+            'SOUTH AMERICA': 'LATAM',
+        }
+
+        def normalize_region(token: str) -> str:
+            cleaned = token.strip().upper().replace('_', ' ')
+            cleaned_compact = cleaned.replace(' ', '')
+            return region_aliases.get(cleaned, region_aliases.get(cleaned_compact, cleaned_compact))
+
         try:
             self.connect()
             cursor = self.cursor()
-            cursor.execute('SELECT title FROM projects WHERE title IS NOT NULL AND title != \'\'')
+            cursor.execute(
+                '''
+                    SELECT title, main_site
+                    FROM projects
+                    WHERE (title IS NOT NULL AND title != '')
+                       OR (main_site IS NOT NULL AND main_site != '')
+                '''
+            )
             rows = cursor.fetchall()
             self.disconnect()
-            pattern = re.compile(r'\s*\(([^)]+)\)\s*$')
+
+            trailing_pattern = re.compile(r'\s*\(([^)]+)\)\s*$')
+            token_pattern = re.compile(r'\b(apac|emea|emena|latam|anz|mea|eu|na|nam|north\s*america|south\s*america)\b', re.IGNORECASE)
+
             regions = set()
+
             for r in rows:
-                title = r.get('title', r[0]) if isinstance(r, dict) else (r[0] if r else '')
-                if not title:
-                    continue
-                m = pattern.search(title)
-                if m:
-                    regions.add(m.group(1).strip())
-            return sorted(regions)
+                if isinstance(r, dict):
+                    title = r.get('title') or ''
+                    main_site = r.get('main_site') or ''
+                else:
+                    title = r[0] if len(r) > 0 and r[0] else ''
+                    main_site = r[1] if len(r) > 1 and r[1] else ''
+
+                title_str = str(title).strip()
+                site_str = str(main_site).strip()
+
+                if title_str:
+                    match = trailing_pattern.search(title_str)
+                    if match:
+                        regions.add(normalize_region(match.group(1)))
+
+                search_text = f"{title_str} {site_str}"
+                for match in token_pattern.findall(search_text):
+                    regions.add(normalize_region(match))
+
+                if site_str:
+                    parsed = urlparse(site_str if '://' in site_str else f'https://{site_str}')
+                    host = (parsed.hostname or '').strip()
+                    for match in token_pattern.findall(host):
+                        regions.add(normalize_region(match))
+
+            return sorted([region for region in regions if region])
         except Exception as e:
-            print(f"Error getting regions from project titles: {e}")
+            print(f"Error getting regions from project titles/domains: {e}")
             try:
                 self.disconnect()
             except Exception:
                 pass
             return []
+
+    def _infer_regions_from_country_values(self, countries: list) -> list:
+        """Infer region buckets from country names when metadata.region is empty."""
+        if not countries:
+            return []
+
+        country_to_region = {
+            'US': 'NA',
+            'USA': 'NA',
+            'UNITED STATES': 'NA',
+            'CANADA': 'NA',
+            'MEXICO': 'LATAM',
+            'BRAZIL': 'LATAM',
+            'ARGENTINA': 'LATAM',
+            'CHILE': 'LATAM',
+            'COLOMBIA': 'LATAM',
+            'PERU': 'LATAM',
+            'UK': 'EMEA',
+            'UNITED KINGDOM': 'EMEA',
+            'GREAT BRITAIN': 'EMEA',
+            'GERMANY': 'EMEA',
+            'FRANCE': 'EMEA',
+            'BELGIUM': 'EMEA',
+            'NETHERLANDS': 'EMEA',
+            'SPAIN': 'EMEA',
+            'ITALY': 'EMEA',
+            'POLAND': 'EMEA',
+            'SWEDEN': 'EMEA',
+            'NORWAY': 'EMEA',
+            'DENMARK': 'EMEA',
+            'FINLAND': 'EMEA',
+            'AUSTRALIA': 'APAC',
+            'NEW ZEALAND': 'APAC',
+            'THAILAND': 'APAC',
+            'SINGAPORE': 'APAC',
+            'MALAYSIA': 'APAC',
+            'INDONESIA': 'APAC',
+            'PHILIPPINES': 'APAC',
+            'VIETNAM': 'APAC',
+            'INDIA': 'APAC',
+            'CHINA': 'APAC',
+            'JAPAN': 'APAC',
+            'SOUTH KOREA': 'APAC',
+        }
+
+        inferred = set()
+        for country in countries:
+            if not country:
+                continue
+            normalized = str(country).strip().upper()
+            region = country_to_region.get(normalized)
+            if region:
+                inferred.add(region)
+
+        preferred_order = ['APAC', 'EMEA', 'LATAM', 'NA']
+        ordered = [r for r in preferred_order if r in inferred]
+        ordered.extend(sorted([r for r in inferred if r not in preferred_order]))
+        return ordered
 
     def get_filters_schema_aware(self) -> dict:
         """Return filters (regions, countries, brands, websites) using actual metadata columns."""
@@ -2158,6 +2275,7 @@ class ParseHubDatabase:
         columns_lookup = {c.lower(): c for c in columns}
 
         result = {'regions': [], 'countries': [], 'brands': [], 'websites': []}
+        region_source = 'none'
         for field, keys in [('regions', CANDIDATES['region']), ('countries', CANDIDATES['country']),
                            ('brands', CANDIDATES['brand']), ('websites', CANDIDATES['website'])]:
             col = None
@@ -2168,10 +2286,24 @@ class ParseHubDatabase:
             if col:
                 if field == 'regions' and col:
                     result['regions'] = self._get_distinct_regions_from_metadata()
+                    if result['regions']:
+                        region_source = f'metadata.{col}'
                 else:
                     result[field] = self._get_distinct_values_for_metadata_column(col)
             if field == 'regions' and not result['regions']:
-                result['regions'] = self._get_distinct_regions_from_project_titles()
+                result['regions'] = self._get_distinct_regions_from_project_titles_or_domains()
+                if result['regions']:
+                    region_source = 'projects.title/main_site'
+
+        if not result['regions'] and result['countries']:
+            result['regions'] = self._infer_regions_from_country_values(result['countries'])
+            if result['regions']:
+                region_source = 'metadata.country->inferred-region'
+
+        print(
+            f"[filters] regions source={region_source}, count={len(result['regions'])}; "
+            f"countries={len(result['countries'])}, brands={len(result['brands'])}, websites={len(result['websites'])}"
+        )
         return result
 
     def get_metadata_filtered(self, project_token: str = None, region: str = None, country: str = None,
