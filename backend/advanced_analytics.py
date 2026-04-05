@@ -2,19 +2,32 @@
 Advanced Analytics Service - Comprehensive data analysis and statistics
 """
 
-import sqlite3
 import json
 import csv
 from io import StringIO
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
+
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent))
+try:
+    from database import ParseHubDatabase
+except ImportError:
+    # Fallback if import fails during certain execution contexts
+    ParseHubDatabase = None
 
 
 class AdvancedAnalyticsService:
     """Service for comprehensive analytics and statistics"""
     
-    def __init__(self, db_path: str = "parsehub.db"):
+    def __init__(self, db: Optional[Any] = None, db_path: str = "parsehub.db"):
+        self.db = db
         self.db_path = db_path
+        
+        # If no DB object provided, create one (will use DATABASE_URL if available)
+        if self.db is None and ParseHubDatabase:
+            self.db = ParseHubDatabase(db_path)
     
     def get_project_analytics(self, project_id: int) -> Optional[Dict]:
         """
@@ -29,71 +42,74 @@ class AdvancedAnalyticsService:
                 'pagination_status': {...}
             }
         """
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        # Get project info
-        cursor.execute('''
-            SELECT id, token, title FROM projects WHERE id = %s
-        ''', (project_id,))
-        project = cursor.fetchone()
-        
-        if not project:
-            conn.close()
+        if not self.db:
             return None
+
+        self.db.connect()
+        cursor = self.db.cursor()
         
-        # Get data stats
-        cursor.execute('''
-            SELECT COUNT(*) as total FROM scraped_data WHERE project_id = %s
-        ''', (project_id,))
-        total_records = cursor.fetchone()['total'] or 0
-        
-        # Get runs info
-        cursor.execute('''
-            SELECT 
-                COUNT(*) as total_runs,
-                SUM(CASE WHEN status='complete' THEN 1 ELSE 0 END) as completed_runs,
-                MAX(end_time) as last_completed
-            FROM runs WHERE project_id = %s
-        ''', (project_id,))
-        runs_info = cursor.fetchone()
-        
-        # Calculate statistics
-        stats = self.calculate_statistics(project_id)
-        
-        # Get pagination info
-        cursor.execute('''
-            SELECT 
-                MAX(CAST(json_extract(data, '$.page_number') AS INTEGER)) as last_page
-            FROM scraped_data WHERE project_id = %s
-        ''', (project_id,))
-        page_result = cursor.fetchone()
-        last_page = page_result['last_page'] or 1 if page_result else 1
-        
-        conn.close()
-        
-        analytics = {
-            'project': {
-                'id': project['id'],
-                'token': project['token'],
-                'title': project['title']
-            },
-            'data': {
-                'total_records': total_records,
-                'last_page_scraped': last_page,
-                'completion_score': self._calculate_completion_score(stats)
-            },
-            'runs': {
-                'total_runs': runs_info['total_runs'] or 0,
-                'completed_runs': runs_info['completed_runs'] or 0,
-                'last_completed': runs_info['last_completed']
-            },
-            'data_quality': stats,
-            'timestamp': datetime.now().isoformat()
-        }
-        
-        return analytics
+        try:
+            # Get project info
+            cursor.execute('''
+                SELECT id, token, title FROM projects WHERE id = %s
+            ''', (project_id,))
+            project = cursor.fetchone()
+            
+            if not project:
+                return None
+            
+            # Get data stats
+            cursor.execute('''
+                SELECT COUNT(*) as total FROM scraped_data WHERE project_id = %s
+            ''', (project_id,))
+            total_result = cursor.fetchone()
+            total_records = total_result['total'] if total_result and total_result.get('total') else 0
+            
+            # Get runs info
+            cursor.execute('''
+                SELECT 
+                    COUNT(*) as total_runs,
+                    SUM(CASE WHEN status='complete' THEN 1 ELSE 0 END) as completed_runs,
+                    MAX(end_time) as last_completed
+                FROM runs WHERE project_id = %s
+            ''', (project_id,))
+            runs_info = cursor.fetchone()
+            
+            # Calculate statistics
+            stats = self.calculate_statistics(project_id)
+            
+            # Get pagination info
+            cursor.execute('''
+                SELECT 
+                    MAX(CAST(json_extract(data, '$.page_number') AS INTEGER)) as last_page
+                FROM scraped_data WHERE project_id = %s
+            ''', (project_id,))
+            page_result = cursor.fetchone()
+            last_page = page_result['last_page'] if page_result and page_result.get('last_page') else 1
+            
+            analytics = {
+                'project': {
+                    'id': project['id'],
+                    'token': project['token'],
+                    'title': project['title']
+                },
+                'data': {
+                    'total_records': total_records,
+                    'last_page_scraped': last_page,
+                    'completion_score': self._calculate_completion_score(stats)
+                },
+                'runs': {
+                    'total_runs': runs_info.get('total_runs', 0) if runs_info else 0,
+                    'completed_runs': runs_info.get('completed_runs', 0) if runs_info else 0,
+                    'last_completed': runs_info.get('last_completed') if runs_info else None
+                },
+                'data_quality': stats,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            return analytics
+        finally:
+            self.db.disconnect()
     
     def calculate_statistics(self, project_id: int) -> Dict:
         """
@@ -111,68 +127,74 @@ class AdvancedAnalyticsService:
                 }
             }
         """
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        # Get all data for this project
-        cursor.execute('''
-            SELECT data FROM scraped_data WHERE project_id = %s
-            ORDER BY created_at ASC
-        ''', (project_id,))
-        
-        raw_data = cursor.fetchall()
-        conn.close()
-        
-        if not raw_data:
+        if not self.db:
             return {}
+
+        self.db.connect()
+        cursor = self.db.cursor()
         
-        # Parse JSON data
-        data_list = []
-        for row in raw_data:
-            try:
-                data_list.append(json.loads(row['data']))
-            except:
-                continue
-        
-        if not data_list:
-            return {}
-        
-        # Extract all keys
-        all_keys = set()
-        for item in data_list:
-            if isinstance(item, dict):
-                all_keys.update(item.keys())
-        
-        # Calculate per-column statistics
-        stats = {}
-        
-        for key in sorted(all_keys):
-            values = []
-            filled_count = 0
-            unique_values = set()
+        try:
+            # Get all data for this project
+            cursor.execute('''
+                SELECT data FROM scraped_data WHERE project_id = %s
+                ORDER BY created_at ASC
+            ''', (project_id,))
             
+            raw_data = cursor.fetchall()
+            
+            if not raw_data:
+                return {}
+            
+            # Parse JSON data
+            data_list = []
+            for row in raw_data:
+                try:
+                    data_val = row['data']
+                    if data_val:
+                        data_list.append(json.loads(data_val))
+                except:
+                    continue
+            
+            if not data_list:
+                return {}
+            
+            # Extract all keys
+            all_keys = set()
             for item in data_list:
                 if isinstance(item, dict):
-                    value = item.get(key)
-                    values.append(value)
-                    
-                    if value is not None and str(value).strip():
-                        filled_count += 1
-                        unique_values.add(str(value))
+                    all_keys.update(item.keys())
             
-            completion_pct = (filled_count / len(data_list) * 100) if data_list else 0
+            # Calculate per-column statistics
+            stats = {}
             
-            stats[key] = {
-                'total_count': len(data_list),
-                'filled_count': filled_count,
-                'empty_count': len(data_list) - filled_count,
-                'completion_percentage': round(completion_pct, 2),
-                'unique_count': len(unique_values),
-                'sample_values': list(unique_values)[:5]
-            }
-        
-        return stats
+            for key in sorted(all_keys):
+                values = []
+                filled_count = 0
+                unique_values = set()
+                
+                for item in data_list:
+                    if isinstance(item, dict):
+                        value = item.get(key)
+                        values.append(value)
+                        
+                        if value is not None and str(value).strip():
+                            filled_count += 1
+                            unique_values.add(str(value))
+                
+                completion_pct = (filled_count / len(data_list) * 100) if data_list else 0
+                
+                stats[key] = {
+                    'total_count': len(data_list),
+                    'filled_count': filled_count,
+                    'empty_count': len(data_list) - filled_count,
+                    'completion_percentage': round(completion_pct, 2),
+                    'unique_count': len(unique_values),
+                    'sample_values': list(unique_values)[:5]
+                }
+            
+            return stats
+        finally:
+            self.db.disconnect()
     
     def get_field_completion_report(self, project_id: int) -> Dict:
         """

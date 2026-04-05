@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS scraped_data (
     project_id INTEGER NOT NULL,
     data_key TEXT,
     data_value TEXT,
+    data TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -90,7 +91,10 @@ CREATE TABLE IF NOT EXISTS data_lineage (
 
 CREATE TABLE IF NOT EXISTS run_checkpoints (
     id SERIAL PRIMARY KEY,
-    run_id INTEGER NOT NULL,
+    run_id INTEGER,
+    project_id INTEGER,
+    checkpoint_type TEXT,
+    checkpoint_data TEXT,
     snapshot_timestamp TIMESTAMP,
     item_count_at_time INTEGER,
     items_per_minute REAL,

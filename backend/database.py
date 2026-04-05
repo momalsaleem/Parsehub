@@ -107,25 +107,56 @@ class ParseHubDatabase:
         """Shim to make PostgreSQL cursor behave like SQLite cursor"""
         def __init__(self, cursor):
             self.cursor = cursor
-        
         def execute(self, sql, params=None):
-            # SQL source uses %s; Postgres expects %s. Only fix schema keywords.
             sql = sql.replace('AUTOINCREMENT', 'SERIAL')
-            sql = sql.replace('INSERT OR REPLACE', 'INSERT') # Simple shim, technically incomplete for REPLACE
-            
-            # Convert SQLite specific REPLACE to PostgreSQL ON CONFLICT
-            # Note: This is an optimistic shim for basic cases
-            if 'INSERT INTO projects' in sql and 'updated_at' in sql:
-                 sql += ' ON CONFLICT (token) DO UPDATE SET title=EXCLUDED.title, owner_email=EXCLUDED.owner_email, main_site=EXCLUDED.main_site, updated_at=CURRENT_TIMESTAMP'
-            elif 'INSERT INTO analytics_cache' in sql:
-                 sql += ' ON CONFLICT (project_token) DO UPDATE SET updated_at=CURRENT_TIMESTAMP, analytics_json=EXCLUDED.analytics_json'
-            
-            # Clean up SQLite types
+            if 'INSERT OR REPLACE INTO' in sql or 'REPLACE INTO' in sql or 'INSERT INTO' in sql:
+                if 'projects' in sql:
+                    sql = sql.replace('INSERT OR REPLACE INTO', 'INSERT INTO').replace('REPLACE INTO', 'INSERT INTO')
+                    if 'ON CONFLICT' not in sql:
+                        sql += ' ON CONFLICT (token) DO UPDATE SET title=EXCLUDED.title, owner_email=EXCLUDED.owner_email, main_site=EXCLUDED.main_site, updated_at=CURRENT_TIMESTAMP'
+                elif 'analytics_cache' in sql:
+                    sql = sql.replace('INSERT OR REPLACE INTO', 'INSERT INTO').replace('REPLACE INTO', 'INSERT INTO')
+                    if 'ON CONFLICT' not in sql:
+                        sql += ' ON CONFLICT (project_token) DO UPDATE SET updated_at=CURRENT_TIMESTAMP, analytics_json=EXCLUDED.analytics_json'
+                elif 'csv_exports' in sql:
+                    sql = sql.replace('INSERT OR REPLACE INTO', 'INSERT INTO').replace('REPLACE INTO', 'INSERT INTO')
+                    if 'ON CONFLICT' not in sql:
+                        sql += ' ON CONFLICT (project_token, run_token) DO UPDATE SET csv_data=EXCLUDED.csv_data, row_count=EXCLUDED.row_count, updated_at=CURRENT_TIMESTAMP'
+                elif 'analytics_records' in sql:
+                    sql = sql.replace('INSERT OR REPLACE INTO', 'INSERT INTO').replace('REPLACE INTO', 'INSERT INTO')
+                    if 'ON CONFLICT' not in sql:
+                        sql += ' ON CONFLICT (project_token, run_token, record_index) DO UPDATE SET record_data=EXCLUDED.record_data, stored_at=CURRENT_TIMESTAMP'
+                elif 'metadata' in sql:
+                    sql = sql.replace('INSERT OR REPLACE INTO', 'INSERT INTO').replace('REPLACE INTO', 'INSERT INTO')
+                    if 'ON CONFLICT' not in sql:
+                        sql += ' ON CONFLICT (personal_project_id) DO UPDATE SET project_id=EXCLUDED.project_id, project_token=EXCLUDED.project_token, project_name=EXCLUDED.project_name, region=EXCLUDED.region, country=EXCLUDED.country, brand=EXCLUDED.brand, website_url=EXCLUDED.website_url, total_pages=EXCLUDED.total_pages, total_products=EXCLUDED.total_products, updated_date=CURRENT_TIMESTAMP, status=EXCLUDED.status'
+                elif 'product_data' in sql:
+                    sql = sql.replace('INSERT OR REPLACE INTO', 'INSERT INTO').replace('REPLACE INTO', 'INSERT INTO')
+                    if 'ON CONFLICT' not in sql:
+                        sql += ' ON CONFLICT (project_id, run_token, product_url, page_number) DO UPDATE SET name=EXCLUDED.name, part_number=EXCLUDED.part_number, brand=EXCLUDED.brand, list_price=EXCLUDED.list_price, sale_price=EXCLUDED.sale_price, updated_at=CURRENT_TIMESTAMP'
+                elif 'combined_scraped_data' in sql:
+                    sql = sql.replace('INSERT OR REPLACE INTO', 'INSERT INTO').replace('REPLACE INTO', 'INSERT INTO')
+                    if 'ON CONFLICT' not in sql:
+                        sql += ' ON CONFLICT (session_id) DO UPDATE SET consolidated_csv=EXCLUDED.consolidated_csv, total_records=EXCLUDED.total_records, updated_at=CURRENT_TIMESTAMP'
+                elif 'url_patterns' in sql:
+                    sql = sql.replace('INSERT OR REPLACE INTO', 'INSERT INTO').replace('REPLACE INTO', 'INSERT INTO')
+                    if 'ON CONFLICT' not in sql:
+                        sql += ' ON CONFLICT (project_token) DO UPDATE SET pattern_type=EXCLUDED.pattern_type, pattern_regex=EXCLUDED.pattern_regex, updated_at=CURRENT_TIMESTAMP'
+                elif 'run_checkpoints' in sql:
+                    sql = sql.replace('INSERT OR REPLACE INTO', 'INSERT INTO').replace('REPLACE INTO', 'INSERT INTO')
+                else:
+                    sql = sql.replace('INSERT OR REPLACE', 'INSERT').replace('REPLACE INTO', 'INSERT INTO')
+
+            if 'json_extract' in sql:
+                import re
+                sql = re.sub(r"json_extract\(([^,]+),\s*'\$\.([^']+)'\)", r"\1->>'\2'", sql)
+
             sql = sql.replace('DATETIME', 'TIMESTAMP')
-            
+
             if params:
                 return self.cursor.execute(sql, params)
             return self.cursor.execute(sql)
+
 
         def _row_to_dict(self, row):
             if row is None: return None
@@ -342,6 +373,7 @@ class ParseHubDatabase:
                 project_id INTEGER NOT NULL,
                 data_key TEXT,
                 data_value TEXT,
+                data TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (run_id) REFERENCES runs(id),
                 FOREIGN KEY (project_id) REFERENCES projects(id)
@@ -415,13 +447,17 @@ class ParseHubDatabase:
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS run_checkpoints (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                run_id INTEGER NOT NULL,
+                run_id INTEGER,
+                project_id INTEGER,
+                checkpoint_type TEXT,
+                checkpoint_data TEXT,
                 snapshot_timestamp TIMESTAMP,
                 item_count_at_time INTEGER,
                 items_per_minute REAL,
                 estimated_completion_time TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (run_id) REFERENCES runs(id)
+                FOREIGN KEY (run_id) REFERENCES runs(id),
+                FOREIGN KEY (project_id) REFERENCES projects(id)
             )
         ''')
 
@@ -644,6 +680,26 @@ class ParseHubDatabase:
                 'ALTER TABLE runs ADD COLUMN completion_percentage REAL DEFAULT 0')
         except:
             pass  # Column already exists
+
+        # Migration for scraped_data 'data' column
+        try:
+            cursor.execute('ALTER TABLE scraped_data ADD COLUMN data TEXT')
+        except:
+            pass
+
+        # Migration for run_checkpoints new columns
+        try:
+            cursor.execute('ALTER TABLE run_checkpoints ADD COLUMN project_id INTEGER')
+        except:
+            pass
+        try:
+            cursor.execute('ALTER TABLE run_checkpoints ADD COLUMN checkpoint_type TEXT')
+        except:
+            pass
+        try:
+            cursor.execute('ALTER TABLE run_checkpoints ADD COLUMN checkpoint_data TEXT')
+        except:
+            pass
 
         # Product data table - stores actual scraped product data
         cursor.execute('''

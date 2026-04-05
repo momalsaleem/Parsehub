@@ -16,6 +16,8 @@ from typing import Optional, Dict, List
 import json
 from datetime import datetime
 import requests
+import threading
+import traceback
 
 # Load environment variables (.env file in the same directory)
 load_dotenv()
@@ -978,18 +980,28 @@ def get_projects():
             f'[API] Retrieved {len(all_projects)} total projects from cache')
 
         # Sync projects if cache was refreshed (optional, can skip on pagination calls)
-        # This is now deferred to reduce response time
         if page == 1:
-            logger.info('[API] First page - syncing projects in background...')
-            try:
-                sync_result = g.db.sync_projects(all_projects)
-                metadata_sync_result = g.db.sync_metadata_with_projects(
-                    all_projects)
-                logger.info(
-                    f'[API] Sync result: {sync_result}, Metadata sync: {metadata_sync_result}')
-            except Exception as sync_err:
-                logger.warning(f'[API] Background sync warning: {sync_err}')
-                # Don't fail on sync errors
+            logger.info('[API] First page - triggering background project sync...')
+            
+            def perform_background_sync(projects):
+                try:
+                    bg_db = ParseHubDatabase() 
+                    logger.info(f'[BG-SYNC] Starting sync for {len(projects)} projects')
+                    
+                    sync_result = bg_db.sync_projects(projects)
+                    metadata_sync_result = bg_db.sync_metadata_with_projects(projects)
+                    
+                    logger.info(f'[BG-SYNC] Completed. Sync: {sync_result}, Metadata sync: {metadata_sync_result}')
+                except Exception as sync_err:
+                    logger.error(f'[BG-SYNC] Error during background sync: {sync_err}')
+
+            # Start background sync thread
+            sync_thread = threading.Thread(
+                target=perform_background_sync, 
+                args=(all_projects,),
+                daemon=True
+            )
+            sync_thread.start()
 
         # Apply keyword filter if provided
         filtered_projects = all_projects

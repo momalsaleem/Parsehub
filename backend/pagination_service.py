@@ -3,17 +3,30 @@ Pagination Service - Handles pagination detection, URL generation, and recovery
 """
 
 import re
-import sqlite3
 import json
 from datetime import datetime
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Any
+
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent))
+try:
+    from database import ParseHubDatabase
+except ImportError:
+    
+    ParseHubDatabase = None
 
 
 class PaginationService:
     """Service for managing pagination and automatic recovery"""
     
-    def __init__(self, db_path: str = "parsehub.db"):
+    def __init__(self, db: Optional[Any] = None, db_path: str = "parsehub.db"):
+        self.db = db
         self.db_path = db_path
+        
+        # If no DB object provided, create one (will use DATABASE_URL if available)
+        if self.db is None and ParseHubDatabase:
+            self.db = ParseHubDatabase(db_path)
     
     def extract_page_number(self, url: str) -> int:
         """
@@ -87,37 +100,48 @@ class PaginationService:
                 'pages_remaining': int
             }
         """
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        if not self.db:
+            return {
+                'needs_recovery': False,
+                'last_page_scraped': 1,
+                'target_pages': target_pages,
+                'total_data_count': 0,
+                'pages_remaining': target_pages
+            }
+
+        self.db.connect()
+        cursor = self.db.cursor()
         
-        # Get last page number from data
-        cursor.execute('''
-            SELECT MAX(CAST(json_extract(data, '$.page_number') AS INTEGER)) as last_page
-            FROM scraped_data 
-            WHERE project_id = %s
-        ''', (project_id,))
-        
-        result = cursor.fetchone()
-        last_page = result['last_page'] or 1 if result else 1
-        
-        # Get total data count
-        cursor.execute('''
-            SELECT COUNT(*) as total FROM scraped_data 
-            WHERE project_id = %s
-        ''', (project_id,))
-        
-        total_count = cursor.fetchone()['total'] or 0
-        
-        conn.close()
-        
-        return {
-            'needs_recovery': last_page < target_pages,
-            'last_page_scraped': last_page,
-            'target_pages': target_pages,
-            'total_data_count': total_count,
-            'pages_remaining': max(0, target_pages - last_page)
-        }
+        try:
+            # Get last page number from data
+            # Using json_extract which is now shimmed for PostgreSQL in database.py
+            cursor.execute('''
+                SELECT MAX(CAST(json_extract(data, '$.page_number') AS INTEGER)) as last_page
+                FROM scraped_data 
+                WHERE project_id = %s
+            ''', (project_id,))
+            
+            result = cursor.fetchone()
+            last_page = result['last_page'] if result and result.get('last_page') else 1
+            
+            # Get total data count
+            cursor.execute('''
+                SELECT COUNT(*) as total FROM scraped_data 
+                WHERE project_id = %s
+            ''', (project_id,))
+            
+            total_result = cursor.fetchone()
+            total_count = total_result['total'] if total_result and total_result.get('total') else 0
+            
+            return {
+                'needs_recovery': last_page < target_pages,
+                'last_page_scraped': last_page,
+                'target_pages': target_pages,
+                'total_data_count': total_count,
+                'pages_remaining': max(0, target_pages - last_page)
+            }
+        finally:
+            self.db.disconnect()
     
     def create_recovery_project_info(self, original_url: str, current_page: int, 
                                      target_pages: int) -> Dict:
@@ -138,22 +162,30 @@ class PaginationService:
     def record_scraping_progress(self, project_id: int, page_number: int, 
                                 data_count: int, items_per_minute: float) -> None:
         """Record scraping progress checkpoint"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+        if not self.db:
+            return
+
+        self.db.connect()
+        cursor = self.db.cursor()
         
-        cursor.execute('''
-            INSERT INTO run_checkpoints
-            (run_id, snapshot_timestamp, item_count_at_time, items_per_minute)
-            VALUES (
-                (SELECT id FROM runs WHERE project_id = %s ORDER BY created_at DESC LIMIT 1),
-                CURRENT_TIMESTAMP,
-                %s,
-                %s
-            )
-        ''', (project_id, data_count, items_per_minute))
-        
-        conn.commit()
-        conn.close()
+        try:
+            cursor.execute('''
+                INSERT INTO run_checkpoints
+                (run_id, project_id, checkpoint_type, checkpoint_data, snapshot_timestamp, item_count_at_time, items_per_minute)
+                VALUES (
+                    (SELECT id FROM runs WHERE project_id = %s ORDER BY created_at DESC LIMIT 1),
+                    %s,
+                    'progress',
+                    %s,
+                    CURRENT_TIMESTAMP,
+                    %s,
+                    %s
+                )
+            ''', (project_id, project_id, json.dumps({'page': page_number}), data_count, items_per_minute))
+            
+            self.db.commit()
+        finally:
+            self.db.disconnect()
 
 
 class PaginationDetector:
